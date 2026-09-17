@@ -70,12 +70,12 @@ if __name__ == "__main__":
     torch.use_deterministic_algorithms(True)
     torch.set_printoptions(profile="full", precision=20)
 
-    # Set random seeds for reproducibility, feel free to comment this out, it still failed in all runs for me :D
-    # seed = 111
-    # torch.random.manual_seed(seed)
-    # random.seed(seed)
-    # np.random.seed(seed)
+    # Set random seeds for reproducibility
+    seed = 111
     torch.autograd.set_detect_anomaly(True)
+    torch.random.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
 
     # Run a simple test experiment
     NUM_BLOCKS = 10
