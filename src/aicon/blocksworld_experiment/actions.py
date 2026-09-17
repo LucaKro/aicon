@@ -1,5 +1,4 @@
 import random
-from enum import Enum
 from typing import Dict, Callable, Union
 
 import torch
@@ -8,27 +7,6 @@ from aicon.base_classes.components import ActionComponent
 from aicon.base_classes.connections import ActiveInterconnection
 from aicon.base_classes.util import collect_derivatives
 from aicon.blocksworld_experiment.global_params import NUM_BLOCKS
-
-
-class ActionSelection(Enum):
-    """How a candidate action is picked from the gradients."""
-
-    #: As originally shipped. Rejected candidates are retired by writing 0.0, which
-    #: makes them indistinguishable from candidates that never had a gradient, so
-    #: once the positive ones run out this can keep reselecting zeros forever.
-    #: The selection itself is unchanged, but the loop now proves when it can no
-    #: longer succeed (every selectable candidate examined and rejected) and raises
-    #: instead of spinning. ActionComponent._attempt_update catches that, so it is
-    #: reported once per step rather than ending the run; proving exhaustion means
-    #: sampling every candidate, which costs roughly a minute over 200 steps.
-    ORIGINAL = "original"
-
-    #: Zero-gradient actions may still be taken at random, but each candidate is
-    #: retired at most once, so the search always terminates.
-    RANDOM_WALK = "random_walk"
-
-    #: Only actions whose gradient actually reduces the cost are eligible.
-    POSITIVE_ONLY = "positive_only"
 
 
 class BlockPuttingAction(ActionComponent):
@@ -41,7 +19,6 @@ class BlockPuttingAction(ActionComponent):
             return
 
         self.internal_action = None
-        self.action_selection = ActionSelection.POSITIVE_ONLY
         self.send_actions = False
         self.wait_for_action_counter = 0
         self.tried_actions = dict()
@@ -80,49 +57,20 @@ class BlockPuttingAction(ActionComponent):
                 clear = 1 - torch.clip(torch.norm(current_state, dim=0), 0, 1)
             gradient_steepness[:, :, already_tried_mask] = 0.0
             choosen_gradient_idx = None
-            found_action = False
-            as_shipped = self.action_selection is ActionSelection.ORIGINAL
-            retired = torch.zeros_like(gradient_steepness, dtype=torch.bool)
-            minus_inf = torch.full_like(gradient_steepness, float("-inf"))
-            while True:
-                if as_shipped:
-                    if torch.sum(torch.abs(gradient_steepness)) <= 0:
-                        break
-                    remaining = gradient_steepness
-                else:
-                    remaining = torch.where(retired, minus_inf, gradient_steepness)
-                steepest = torch.max(remaining)
-                # a negative gradient means the action increases the cost, and a zero
-                # gradient means it does not advance the goal at all
-                if not as_shipped and (steepest < 0 or (steepest == 0
-                        and self.action_selection is ActionSelection.POSITIVE_ONLY)):
-                    break
-                possible_steepest_gradient_idxs = (remaining == steepest).nonzero()
+            while torch.sum(torch.abs(gradient_steepness)) > 0:
+                # print("Gradients", gradient_steepness)
+                possible_steepest_gradient_idxs = (gradient_steepness == torch.max(gradient_steepness)).nonzero()
                 n_idxs = possible_steepest_gradient_idxs.shape[0]
                 choosen_gradient_idx = possible_steepest_gradient_idxs[random.randint(0, n_idxs-1)]
                 action_idx = choosen_gradient_idx[2:5]
                 if action_idx[0] == 0:
                     if clear[action_idx[1]] and clear[action_idx[2]] and current_state[action_idx[1], action_idx[2]] == 0:
-                        found_action = True
                         break
                 elif action_idx[0] == 1:
                         if clear[action_idx[1]] and current_state[action_idx[1], action_idx[2]] == 1:
-                            found_action = True
                             break
-                retired[tuple(choosen_gradient_idx)] = True
-                if as_shipped:
-                    gradient_steepness[tuple(choosen_gradient_idx)] = 0.0
-                    # Legality does not depend on the gradients, and this loop only
-                    # ever changes them by zeroing, so once every entry that can still
-                    # be selected has been examined and rejected, no later iteration
-                    # can succeed either: it would spin forever.
-                    selectable = gradient_steepness == torch.max(gradient_steepness)
-                    if bool(torch.all(retired[selectable])):
-                        raise RuntimeError(
-                            f"action selection cannot terminate: all {int(selectable.sum())} "
-                            "currently selectable candidates were examined and rejected, "
-                            "but retiring a candidate by zeroing it leaves it selectable")
-            if not found_action:
+                gradient_steepness[tuple(choosen_gradient_idx)] = 0.0
+            if choosen_gradient_idx is None:
                 print("No gradients available!")
                 self.internal_action = None
                 return
